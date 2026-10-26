@@ -55,6 +55,18 @@ controller:
           - script: >
               pipelineJob('account-service') {
                 description('Build, test, push to ECR and deploy account-service to EKS. Pipeline: Jenkinsfile in the repo.')
+                // Same trigger and parameter as the Jenkinsfile. Declared here too because JCasC re-creates
+                // the job on every Jenkins restart, which would otherwise drop them until a build runs.
+                parameters {
+                  booleanParam('DEPLOY', true, 'Build the image, push it to ECR and deploy to EKS after the tests pass')
+                }
+                properties {
+                  pipelineTriggers {
+                    triggers {
+                      pollSCM { scmpoll_spec('H/5 * * * *') }
+                    }
+                  }
+                }
                 definition {
                   cpsScm {
                     scm {
