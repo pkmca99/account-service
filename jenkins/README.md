@@ -1,213 +1,212 @@
-# Jenkins CI/CD for account-service
+# Jenkins CI/CD for account-service (on EKS)
 
-Every push to GitHub runs this pipeline (defined in the `Jenkinsfile` at the project root):
+Jenkins runs inside the EKS cluster `accountsevice-cluster`. Every push to GitHub runs the pipeline in the
+`Jenkinsfile` at the project root:
 
 ```
-GitHub ──► Checkout ──► Build & unit tests ──► Docker image ──► Push to ECR ──► Deploy to EKS ──► Smoke test
-           (git)        (mvn verify,           (Dockerfile)     (tag: build-     (kubectl apply,   (curl health +
-                         JUnit report)                           commit)          rollout status)    accounts API)
-                                                                                        │                  │
-                                                                                        └── fails? ──► automatic rollback
+GitHub ──► Checkout ──► Build & unit tests ──► Image -> ECR ──► Deploy to EKS ──► Smoke test
+           (jnlp)        (maven container,      (BuildKit,       (kubectl apply,   (curl pod: health
+                          mvn verify, JUnit)     no Docker)       rollout status)    + accounts API)
+                                                                       │                  │
+                                                                       └── fails? ──► automatic rollback
 ```
 
-Jenkins runs in Docker on your laptop. It checks GitHub for new commits every 5 minutes; a laptop can't
-receive GitHub webhooks without a public URL.
+## What runs where
 
-All commands below are for **Windows CMD** in `C:\Users\pkmca\Downloads\account-service`
-unless a step says otherwise.
+| Part | Where | Defined in |
+|---|---|---|
+| Jenkins controller | Pod `jenkins-0`, namespace `jenkins`, on node group `ci-nodes` (t3.large on-demand, us-east-1a, tainted `workload=ci`) | `helm/values.yaml` |
+| Jenkins home | 20 GiB gp3 EBS volume (PVC `jenkins`, StorageClass `gp3`, reclaim policy `Retain`) | `k8s/storageclass.yml` |
+| Plugins, job `account-service` | Configuration as code (JCasC + Job DSL) in the Helm values | `helm/values.yaml` |
+| Build agent | One pod per build: `jnlp` (git), `maven`, `buildkit`, `tools` (aws + kubectl) | `agent-pod.yaml` |
+| `tools` image | `546850508021.dkr.ecr.us-east-1.amazonaws.com/ci-tools:1` | `ci-tools/Dockerfile` |
+| Maven cache | PVC `maven-repo`, 5 GiB gp3 | `k8s/maven-repo-pvc.yml` |
+| ECR push permission | EKS Pod Identity: service account `jenkins/jenkins-agent` → IAM role `jenkins-agent-ecr` → policy `jenkins-agent-ecr` (push to `account-service` and `ci-tools` only) | `iam/jenkins-agent-ecr-policy.json` |
+| Deploy permission | Role `jenkins-deployer` in namespace `accounts` only | `k8s/deployer-rbac.yml` |
+| The app | Node group `dev-nodes` (Spot t3a.small), namespace `accounts` | `../k8s.yml` |
+
+No AWS access key is stored in Jenkins. The agents get short-lived AWS credentials from Pod Identity, and
+kubectl uses the pod's service-account token.
+
+All commands below work in PowerShell or CMD from `C:\Users\pkmca\Downloads\account-service`.
+They need the AWS CLI signed in, `kubectl`, `helm` (`winget install Helm.Helm`) and `.\eksctl.exe`.
 
 ---
 
-## Step 0. What you need
+## Daily use
 
-| Tool | Check with |
-|---|---|
-| Docker Desktop, running | `docker version` |
-| Git | `git --version` |
-| AWS CLI, signed in as you | `aws sts get-caller-identity` |
-| A GitHub account | |
-
-## Step 1. Put the project on GitHub
-
-Skip this if the code is already on GitHub with the new `Jenkinsfile`; just commit and push the new files.
-
-1. On github.com create an **empty** repository named `account-service` (no README, no .gitignore).
-2. Push the project:
+### Open Jenkins
 
 ```
-cd C:\Users\pkmca\Downloads\account-service
-git init -b main
-git add .
-git status
-git commit -m "account-service with logging and Jenkins pipeline"
-git remote add origin https://github.com/<your-github-user>/account-service.git
-git push -u origin main
+kubectl -n jenkins port-forward svc/jenkins 8091:8080
 ```
 
-Check `git status` before committing: **`eksctl.exe` must not be in the list.** It is 150 MB and GitHub
-rejects files over 100 MB. The `.gitignore` file already excludes it, along with `target/` and `.idea/`.
-
-## Step 2. Create an AWS user for Jenkins
-
-Jenkins needs its own access key; your `aws login` session expires and can't be used by Jenkins.
-Run these signed in as yourself (the user who created the cluster).
+Open **http://localhost:8091**. User `admin`; the password is in a Kubernetes secret:
 
 ```
-:: 1. The user
-aws iam create-user --user-name jenkins-ci
-
-:: 2. Push images to ECR
-aws iam attach-user-policy --user-name jenkins-ci --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
-
-:: 3. Read the cluster details (needed for "aws eks update-kubeconfig")
-aws iam put-user-policy --user-name jenkins-ci --policy-name eks-describe --policy-document file://jenkins/iam/eks-describe-policy.json
-
-:: 4. Access key: copy AccessKeyId and SecretAccessKey now, the secret is shown only once
-aws iam create-access-key --user-name jenkins-ci
+kubectl -n jenkins get secret jenkins -o jsonpath="{.data.jenkins-admin-password}"
 ```
 
-Then allow `jenkins-ci` to deploy inside the cluster (EKS access entry):
+That prints base64; decode it with PowerShell:
+`[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("<value>"))`.
+
+(Port 8091, because the old laptop Jenkins still uses 8090 until it is removed.)
+
+### Run the pipeline
+
+Push to `main`; Jenkins checks GitHub every 5 minutes. Or click **Build with Parameters** on the
+`account-service` job. Untick `DEPLOY` to build and test only.
+
+Watch the agent pod start and finish:
 
 ```
-aws eks create-access-entry --cluster-name accountsevice-cluster --region us-east-1 --principal-arn arn:aws:iam::546850508021:user/jenkins-ci
-
-aws eks associate-access-policy --cluster-name accountsevice-cluster --region us-east-1 --principal-arn arn:aws:iam::546850508021:user/jenkins-ci --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy --access-scope type=cluster
+kubectl -n jenkins get pods -w
 ```
 
-If `create-access-entry` says the cluster's authentication mode doesn't support access entries, turn them on
-and run it again (takes a minute or two):
-
-```
-aws eks update-cluster-config --name accountsevice-cluster --region us-east-1 --access-config authenticationMode=API_AND_CONFIG_MAP
-```
-
-Cluster admin is the simple choice for a practice cluster. For a real team, give the CI user a
-narrower policy.
-
-## Step 3. Start Jenkins
-
-```
-cd C:\Users\pkmca\Downloads\account-service\jenkins
-docker compose up -d --build
-```
-
-The first build takes about 5 minutes (it installs the Docker CLI, AWS CLI, kubectl and plugins).
-When it's done:
-
-1. Get the first-login password:
-   ```
-   docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
-   ```
-2. Open **http://localhost:8090** and paste the password.
-3. Choose **Install suggested plugins**.
-4. Create your admin user, keep the Jenkins URL as `http://localhost:8090/`, and click **Start using Jenkins**.
-
-Check the tools inside the container:
-
-```
-docker exec jenkins docker version
-docker exec jenkins aws --version
-docker exec jenkins kubectl version --client
-```
-
-`docker version` must show both **Client** and **Server**. If Server is missing, Docker Desktop isn't
-running or the socket isn't mounted.
-
-## Step 4. Add credentials in Jenkins
-
-Go to **Manage Jenkins → Credentials → System → Global credentials (unrestricted) → Add Credentials**.
-
-| Kind | ID (type exactly) | Username | Password |
-|---|---|---|---|
-| Username with password | `aws-jenkins` | AccessKeyId from Step 2 | SecretAccessKey from Step 2 |
-| Username with password | `github-token` | your GitHub username | a GitHub personal access token |
-
-The `github-token` is only needed for a **private** repository. Create the token on GitHub under
-**Settings → Developer settings → Personal access tokens → Fine-grained tokens**, giving it read-only
-**Contents** access to the `account-service` repository.
-
-## Step 5. Create the pipeline job
-
-1. Jenkins home → **New Item** → name `account-service` → **Pipeline** → **OK**.
-2. Under **Pipeline**:
-   - **Definition:** Pipeline script from SCM
-   - **SCM:** Git
-   - **Repository URL:** `https://github.com/<your-github-user>/account-service.git`
-   - **Credentials:** `github-token` (private repo only)
-   - **Branch Specifier:** `*/main`
-   - **Script Path:** `Jenkinsfile`
-3. **Save**.
-
-## Step 6. Run it
-
-1. Click **Build Now**. The first run reads the `Jenkinsfile` and turns on the `DEPLOY` parameter and the
-   5-minute GitHub check. After that the button is **Build with Parameters**.
-2. Watch the stages on the job page, or open the build → **Console Output**.
-3. The first build is slow because Maven downloads every dependency. They're cached afterwards in the
-   `maven-repo` Docker volume.
-
-What each stage does:
-
-| Stage | What happens | Fails when |
-|---|---|---|
-| Checkout | Pulls the code; image tag = `<build number>-<commit>`, e.g. `7-a1b2c3d` | Repo URL or token wrong |
-| Build & unit tests | `mvn clean verify` in a `maven:3.9-eclipse-temurin-25` container; JUnit results on the build page | A test fails or the code doesn't compile |
-| Docker image | `docker build` with the project's Dockerfile | Dockerfile error |
-| Push to ECR | Logs in to ECR and pushes `:<tag>` and `:latest` | `aws-jenkins` key wrong or missing ECR permission |
-| Deploy to EKS | `kubectl apply` of `k8s.yml` with this build's tag, then waits for the rollout | Pod won't start (crash, probe failing, image pull error) → **rollback** |
-| Smoke test | A temporary curl pod calls `/actuator/health/readiness` and `/api/v1/accounts` | Service unhealthy → **rollback** |
-
-Untick `DEPLOY` in **Build with Parameters** to only build and test, without pushing or deploying.
-
-## Step 7. Check the deployment
-
-From your own terminal (after `aws login`):
+### Check the deployment
 
 ```
 kubectl -n accounts get deployment account-service -o jsonpath="{.spec.template.spec.containers[0].image}"
 kubectl -n accounts rollout history deployment/account-service
-kubectl -n accounts logs deployment/account-service --tail=20
+kubectl -n accounts rollout undo deployment/account-service        # manual rollback
 ```
 
-The image should end with the tag shown in the Jenkins build description.
+### Save money between practice sessions
 
-## Day-to-day
-
-```
-git add .
-git commit -m "your change"
-git push
-```
-
-Jenkins notices the commit within 5 minutes and runs the whole pipeline.
-
-Roll back by hand at any time:
+The `ci-nodes` node costs about $61/month if it runs all the time. Scale it to zero when you are done;
+Jenkins waits as `Pending` and its EBS volume is kept:
 
 ```
-kubectl -n accounts rollout undo deployment/account-service
+.\eksctl.exe scale nodegroup --cluster accountsevice-cluster --region us-east-1 --name ci-nodes --nodes 0
+.\eksctl.exe scale nodegroup --cluster accountsevice-cluster --region us-east-1 --name ci-nodes --nodes 1
 ```
+
+The EBS CSI driver and the Pod Identity agent also run only on `ci-nodes`, so while it is at zero,
+nothing can create EBS volumes or use Pod Identity. The app itself is not affected.
+
+---
+
+## Change the setup
+
+| To change | Edit | Apply with |
+|---|---|---|
+| Plugins, job definition, controller size | `helm/values.yaml` | `helm upgrade --install jenkins jenkins/jenkins -n jenkins -f jenkins/helm/values.yaml --version 5.10.0` |
+| Build containers, their sizes | `agent-pod.yaml` | Commit and push; the next build uses it |
+| aws / kubectl versions | `ci-tools/Dockerfile` | Build and push a new tag (commands in the file), then update `agent-pod.yaml` |
+| What the pipeline may deploy | `k8s/deployer-rbac.yml` | `kubectl apply -f jenkins/k8s/deployer-rbac.yml` |
+| Which ECR repositories it may push to | `iam/jenkins-agent-ecr-policy.json` | `aws iam create-policy-version --policy-arn arn:aws:iam::546850508021:policy/jenkins-agent-ecr --policy-document file://jenkins/iam/jenkins-agent-ecr-policy.json --set-as-default` |
+
+Settings made by clicking in the Jenkins UI are lost when the controller restarts with a new
+configuration; put them in `helm/values.yaml` instead.
+
+---
+
+## Set up from scratch
+
+This is what was run to build the current setup, in order. Every step is safe to re-run except where noted.
+
+**1. CI node group** (about 5 minutes):
+
+```
+.\eksctl.exe create nodegroup --config-file cluster.yml --include ci-nodes
+```
+
+**2. Add-ons: Pod Identity agent and EBS CSI driver.** Both are pinned to `ci-nodes`. The `dev-nodes`
+t3a.small can only run 8 pods and is nearly full; when the EBS CSI DaemonSet first landed there, its
+system-critical pod *preempted the account-service pod*.
+
+```
+.\eksctl.exe create addon --cluster accountsevice-cluster --region us-east-1 --name eks-pod-identity-agent
+.\eksctl.exe create addon --cluster accountsevice-cluster --region us-east-1 --name aws-ebs-csi-driver
+```
+
+Then pin both to `ci-nodes`. Save this as `ci-nodes-only.json`:
+
+```json
+{"nodeSelector":{"workload":"ci"},"tolerations":[{"key":"workload","operator":"Equal","value":"ci","effect":"NoSchedule"}]}
+```
+
+and this as `ebs-ci-nodes-only.json`:
+
+```json
+{"node":{"nodeSelector":{"workload":"ci"},"tolerations":[{"key":"workload","operator":"Equal","value":"ci","effect":"NoSchedule"}]},
+ "controller":{"nodeSelector":{"workload":"ci"},"tolerations":[{"key":"workload","operator":"Equal","value":"ci","effect":"NoSchedule"}]}}
+```
+
+```
+aws eks update-addon --cluster-name accountsevice-cluster --region us-east-1 --addon-name eks-pod-identity-agent --configuration-values file://ci-nodes-only.json --resolve-conflicts OVERWRITE
+aws eks update-addon --cluster-name accountsevice-cluster --region us-east-1 --addon-name aws-ebs-csi-driver --configuration-values file://ebs-ci-nodes-only.json --resolve-conflicts OVERWRITE
+```
+
+The EBS CSI driver uses the IRSA role eksctl created with the add-on
+(`eksctl-accountsevice-cluster-addon-aws-ebs-cs-Role1-…`). Check that its service account still has the role:
+
+```
+kubectl -n kube-system get sa ebs-csi-controller-sa -o jsonpath="{.metadata.annotations}"
+```
+
+**3. Storage, namespace, RBAC:**
+
+```
+kubectl apply -f jenkins/k8s/storageclass.yml
+kubectl create namespace jenkins
+kubectl apply -f jenkins/k8s/maven-repo-pvc.yml
+kubectl apply -f jenkins/k8s/deployer-rbac.yml
+```
+
+**4. AWS permissions for the build agents:**
+
+```
+aws ecr create-repository --repository-name ci-tools --region us-east-1 --image-scanning-configuration scanOnPush=true
+aws iam create-policy --policy-name jenkins-agent-ecr --policy-document file://jenkins/iam/jenkins-agent-ecr-policy.json
+.\eksctl.exe create podidentityassociation --cluster accountsevice-cluster --region us-east-1 --namespace jenkins --service-account-name jenkins-agent --role-name jenkins-agent-ecr --permission-policy-arns arn:aws:iam::546850508021:policy/jenkins-agent-ecr
+```
+
+**5. The `ci-tools` image** — commands at the top of `ci-tools/Dockerfile`. In PowerShell 5.1, run the
+`docker login` line from Git Bash; piping the ECR password through PowerShell 5.1 corrupts it (`400 Bad Request`).
+
+**6. Jenkins:**
+
+```
+helm repo add jenkins https://charts.jenkins.io
+helm upgrade --install jenkins jenkins/jenkins -n jenkins -f jenkins/helm/values.yaml --version 5.10.0 --wait
+```
+
+**7. Point the job at the GitHub repository**: set the URL in `helm/values.yaml`
+(`remote { url('https://github.com/<user>/account-service.git') }`) and run step 6 again. For a private
+repository, also add a GitHub token credential (see Troubleshooting).
+
+---
 
 ## Troubleshooting
 
-| Error in Console Output | Fix |
+| Symptom | Cause / fix |
 |---|---|
-| `Cannot connect to the Docker daemon` | Start Docker Desktop, then `docker compose restart` in the `jenkins` folder |
-| `No such container: jenkins` | The Jenkins container must be named `jenkins` (set in `docker-compose.yml`) |
-| `$'\r': command not found` | The Jenkinsfile was committed with Windows line endings. `.gitattributes` prevents this; run `git add --renormalize .`, commit and push |
-| `could not find credentials entry with ID 'aws-jenkins'` | Credential ID typed differently in Step 4 |
-| `AccessDenied ... ecr` or `eks:DescribeCluster` | IAM policies from Step 2 missing on `jenkins-ci` |
-| `error: You must be logged in to the server (Unauthorized)` | EKS access entry from Step 2 missing |
-| Deploy stage times out at `rollout status` | Check `kubectl -n accounts describe pod` events; on a Spot node the pod may be `Pending` |
-| `Image line not found in k8s.yml` | The `image:` line in `k8s.yml` must be `546850508021.dkr.ecr.us-east-1.amazonaws.com/account-service:latest` |
+| Agent pod stays `Pending` | `ci-nodes` scaled to 0, or the build needs more memory than the node has: `kubectl -n jenkins describe pod <agent-pod>` |
+| Deploy times out at `rollout status`, new app pod `Pending`, event `Too many pods` | `dev-nodes` (t3a.small) allows 8 pods and normally runs 7. A rolling update or the smoke-test pod needs the 8th slot. Check nothing extra landed there: `kubectl get pods -A --field-selector spec.nodeName=<dev node>` |
+| `AccessDenied` from `aws` or BuildKit push | Pod Identity association missing or policy too narrow: `aws eks list-pod-identity-associations --cluster-name accountsevice-cluster --region us-east-1` |
+| `Forbidden` from kubectl | Role `jenkins-deployer` only covers namespace `accounts`; `k8s.yml` must not contain cluster-wide objects |
+| BuildKit `failed to create ... namespace` / permission errors | The `buildkit` container needs the `Unconfined` seccomp and AppArmor settings from `agent-pod.yaml` |
+| Checkout fails with `could not read Username` | Private repository: create a GitHub fine-grained token (read-only Contents), add it as credential `github-token`, and add `credentials('github-token')` inside `remote { }` in `helm/values.yaml` |
+| PVC `Pending` for a long time | EBS CSI controller not running: `kubectl -n kube-system get pods -l app=ebs-csi-controller` |
 
-## Stop, restart, remove
+---
+
+## Old laptop Jenkins (until cutover)
+
+`docker-compose.yml`, `Dockerfile` and `plugins.txt` in this folder are the previous Jenkins in Docker
+Desktop, with IAM user `jenkins-ci` and its access key. Once the EKS Jenkins has deployed from GitHub
+successfully, remove them:
 
 ```
-cd C:\Users\pkmca\Downloads\account-service\jenkins
-docker compose stop          :: stop Jenkins, keep everything
-docker compose start         :: start it again
-docker compose down -v       :: remove Jenkins and ALL its jobs and settings
+cd jenkins
+docker compose down -v
+aws iam list-access-keys --user-name jenkins-ci
+aws iam delete-access-key --user-name jenkins-ci --access-key-id <id>
+aws eks delete-access-entry --cluster-name accountsevice-cluster --region us-east-1 --principal-arn arn:aws:iam::546850508021:user/jenkins-ci
+aws iam detach-user-policy --user-name jenkins-ci --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+aws iam delete-user-policy --user-name jenkins-ci --policy-name eks-describe
+aws iam delete-user --user-name jenkins-ci
 ```
 
-When you're done practicing, delete the access key (`aws iam delete-access-key --user-name jenkins-ci --access-key-id <id>`)
-and the cluster, so nothing keeps costing money.
+Then delete `docker-compose.yml`, `Dockerfile`, `plugins.txt` and `iam/eks-describe-policy.json` from this folder.

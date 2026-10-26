@@ -1,20 +1,17 @@
 # Kubernetes manifests for account-service (image in Amazon ECR).
 #
-#   kubectl apply -f k8s.yaml
+#   kubectl create namespace accounts          (once; Jenkins can only change things inside it)
+#   kubectl apply -f k8s.yml
 #   kubectl -n accounts get pods,svc
 #   kubectl -n accounts port-forward svc/account-service 8082:80     -> http://localhost:8082/api/v1/accounts
-#   kubectl delete -f k8s.yaml
+#   kubectl delete -f k8s.yml
+#
+# The namespace is not defined here: it is cluster-wide, and the Jenkins deploy Role
+# (jenkins/k8s/deployer-rbac.yml) is deliberately limited to resources inside "accounts".
 #
 # NOTE: account-service keeps its data IN MEMORY, so every pod has its own copy.
 # Keep replicas: 1 until the service uses a real database; with 2+ pods, a request may
 # land on a pod that does not have an account created through another pod.
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: accounts
-  labels:
-    app.kubernetes.io/part-of: eazybank
 ---
 apiVersion: v1
 kind: ConfigMap

@@ -1,0 +1,15 @@
+# Maven dependency cache shared by builds (replaces the laptop's maven-repo Docker volume).
+# ReadWriteOnce: one build at a time, which the Jenkinsfile enforces with disableConcurrentBuilds().
+#
+#   kubectl apply -f jenkins/k8s/maven-repo-pvc.yml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: maven-repo
+  namespace: jenkins
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 5Gi

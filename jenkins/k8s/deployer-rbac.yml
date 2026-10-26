@@ -1,0 +1,43 @@
+# Lets the Jenkins build agents (service account jenkins/jenkins-agent) deploy account-service,
+# and nothing else: the Role only exists in namespace "accounts".
+#
+#   kubectl apply -f jenkins/k8s/deployer-rbac.yml
+#   kubectl auth can-i patch deployments -n accounts    --as=system:serviceaccount:jenkins:jenkins-agent   -> yes
+#   kubectl auth can-i patch deployments -n kube-system --as=system:serviceaccount:jenkins:jenkins-agent   -> no
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-deployer
+  namespace: accounts
+rules:
+  # kubectl apply -f k8s.yml, rollout status / undo
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "serviceaccounts"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  # Smoke test: kubectl run --rm -i (creates, attaches to and deletes a curl pod)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/attach", "pods/log"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-deployer
+  namespace: accounts
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-agent
+    namespace: jenkins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-deployer

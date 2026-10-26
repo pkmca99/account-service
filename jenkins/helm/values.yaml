@@ -1,0 +1,65 @@
+# Jenkins on EKS for the account-service pipeline. Chart: jenkins/jenkins (https://charts.jenkins.io)
+#
+#   helm repo add jenkins https://charts.jenkins.io
+#   helm upgrade --install jenkins jenkins/jenkins -n jenkins -f jenkins/helm/values.yaml --version 5.10.0
+#
+# Everything is configuration as code (JCasC): a fresh install comes up with the plugins, the
+# Kubernetes cloud and the account-service job. Admin password: secret "jenkins", key "jenkins-admin-password".
+
+controller:
+  # Only the tainted CI node group (cluster.yml: ci-nodes)
+  nodeSelector:
+    workload: ci
+  tolerations:
+    - { key: workload, operator: Equal, value: ci, effect: NoSchedule }
+
+  resources:
+    requests: { cpu: 250m, memory: 1Gi }   # mostly idle; leaves CPU requests free for a build pod
+    limits: { memory: 2Gi }
+  javaOpts: "-XX:MaxRAMPercentage=70"
+
+  serviceType: ClusterIP          # UI through: kubectl -n jenkins port-forward svc/jenkins 8090:8080
+
+  # The chart's own list (kubernetes, workflow-aggregator, git, configuration-as-code) stays; these are added.
+  # Same as the laptop's jenkins/plugins.txt, plus job-dsl for the job definition below.
+  additionalPlugins:
+    - github
+    - credentials-binding
+    - pipeline-stage-view
+    - junit
+    - timestamper
+    - ws-cleanup
+    - job-dsl
+
+  JCasC:
+    configScripts:
+      jobs: |
+        jobs:
+          - script: >
+              pipelineJob('account-service') {
+                description('Build, test, push to ECR and deploy account-service to EKS. Pipeline: Jenkinsfile in the repo.')
+                definition {
+                  cpsScm {
+                    scm {
+                      git {
+                        remote { url('https://github.com/pkmca99/account-service.git') }   // public: no credentials
+                        branch('*/main')
+                      }
+                    }
+                    scriptPath('Jenkinsfile')
+                    lightweight(true)
+                  }
+                }
+              }
+
+persistence:
+  enabled: true
+  storageClass: gp3               # jenkins/k8s/storageclass.yml
+  size: 20Gi
+
+# Build agents run as this service account. It holds both build permissions:
+#   AWS: EKS Pod Identity -> IAM role jenkins-agent-ecr (ECR push, jenkins/iam/jenkins-agent-ecr-policy.json)
+#   Kubernetes: Role jenkins-deployer in namespace accounts (jenkins/k8s/deployer-rbac.yml)
+serviceAccountAgent:
+  create: true
+  name: jenkins-agent

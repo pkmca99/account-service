@@ -1,0 +1,56 @@
+# Pod that runs one build of the account-service pipeline (Jenkinsfile: agent { kubernetes { yamlFile ... } }).
+# The Kubernetes plugin adds its own "jnlp" container; all containers share the build workspace.
+#
+#   maven     mvn clean verify
+#   buildkit  builds the Dockerfile and pushes the image to ECR, without a Docker daemon (EKS runs containerd)
+#   tools     aws + kubectl (ECR login, deploy, smoke test, rollback)
+#
+# Permissions come from the service account, not from stored keys:
+#   - AWS (ECR push): EKS Pod Identity association jenkins/jenkins-agent -> IAM role jenkins-agent-ecr
+#   - Kubernetes (deploy): Role jenkins-deployer in namespace accounts (jenkins/k8s/deployer-rbac.yml)
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-agent
+  nodeSelector:
+    workload: ci
+  tolerations:
+    - { key: workload, operator: Equal, value: ci, effect: NoSchedule }
+  containers:
+    - name: maven
+      image: maven:3.9-eclipse-temurin-25
+      command: ["sleep", "infinity"]
+      # CPU requests are kept low so the pod fits next to the controller on one t3.large (1930m allocatable);
+      # there is no CPU limit, so a build can still use the whole node.
+      resources:
+        requests: { cpu: 300m, memory: 1Gi }
+        limits: { memory: 2Gi }
+      volumeMounts:
+        - { name: maven-repo, mountPath: /root/.m2 }
+    - name: buildkit
+      # Rootless BuildKit; settings follow BuildKit's own rootless Kubernetes example.
+      image: moby/buildkit:v0.34.1-rootless
+      command: ["sleep", "infinity"]
+      env:
+        - { name: BUILDKITD_FLAGS, value: --oci-worker-no-process-sandbox }
+      resources:
+        requests: { cpu: 300m, memory: 1Gi }
+        limits: { memory: 1536Mi }
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: Unconfined }
+        appArmorProfile: { type: Unconfined }
+      volumeMounts:
+        - { name: buildkit-state, mountPath: /home/user/.local/share/buildkit }
+    - name: tools
+      image: 546850508021.dkr.ecr.us-east-1.amazonaws.com/ci-tools:1
+      command: ["sleep", "infinity"]
+      resources:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { memory: 256Mi }
+  volumes:
+    - name: maven-repo
+      persistentVolumeClaim: { claimName: maven-repo }
+    - name: buildkit-state
+      emptyDir: {}

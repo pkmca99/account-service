@@ -18,3 +18,18 @@ managedNodeGroups:
     maxSize: 2
     volumeSize: 20
     privateNetworking: false
+  # Jenkins controller + build agents (jenkins/README.md). On-demand so a Spot interruption
+  # can't kill a running build; one AZ because the Jenkins home EBS volume is zonal.
+  # The taint keeps everything else off this node.
+  #   eksctl create nodegroup --config-file cluster.yml --include ci-nodes
+  - name: ci-nodes
+    instanceType: t3.large
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 2
+    volumeSize: 30
+    availabilityZones: ["us-east-1a"]
+    privateNetworking: false
+    labels: { workload: ci }
+    taints:
+      - { key: workload, value: ci, effect: NoSchedule }
