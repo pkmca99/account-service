@@ -50,7 +50,6 @@ kubectl -n jenkins get secret jenkins -o jsonpath="{.data.jenkins-admin-password
 That prints base64; decode it with PowerShell:
 `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("<value>"))`.
 
-(Port 8091, because the old laptop Jenkins still uses 8090 until it is removed.)
 
 ### Run the pipeline
 
@@ -192,21 +191,8 @@ repository, also add a GitHub token credential (see Troubleshooting).
 
 ---
 
-## Old laptop Jenkins (until cutover)
+## History
 
-`docker-compose.yml`, `Dockerfile` and `plugins.txt` in this folder are the previous Jenkins in Docker
-Desktop, with IAM user `jenkins-ci` and its access key. Once the EKS Jenkins has deployed from GitHub
-successfully, remove them:
-
-```
-cd jenkins
-docker compose down -v
-aws iam list-access-keys --user-name jenkins-ci
-aws iam delete-access-key --user-name jenkins-ci --access-key-id <id>
-aws eks delete-access-entry --cluster-name accountsevice-cluster --region us-east-1 --principal-arn arn:aws:iam::546850508021:user/jenkins-ci
-aws iam detach-user-policy --user-name jenkins-ci --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
-aws iam delete-user-policy --user-name jenkins-ci --policy-name eks-describe
-aws iam delete-user --user-name jenkins-ci
-```
-
-Then delete `docker-compose.yml`, `Dockerfile`, `plugins.txt` and `iam/eks-describe-policy.json` from this folder.
+Until 2026-10-26, Jenkins ran in Docker Desktop on a laptop (`jenkins/docker-compose.yml`) and deployed with
+the access key of IAM user `jenkins-ci`. That setup, the user, its key and its EKS access entry have been
+removed; the old files are in the Git history before the commit "Remove laptop Jenkins".

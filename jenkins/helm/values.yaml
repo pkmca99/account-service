@@ -21,7 +21,7 @@ controller:
   serviceType: ClusterIP          # UI through: kubectl -n jenkins port-forward svc/jenkins 8090:8080
 
   # The chart's own list (kubernetes, workflow-aggregator, git, configuration-as-code) stays; these are added.
-  # Same as the laptop's jenkins/plugins.txt, plus job-dsl for the job definition below.
+  # job-dsl is needed for the job definition below.
   additionalPlugins:
     - github
     - credentials-binding
