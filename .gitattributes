@@ -1,0 +1,8 @@
+# Jenkins runs on Linux: keep Unix line endings in files it executes,
+# otherwise shell steps fail with "$'\r': command not found".
+* text=auto
+Jenkinsfile text eol=lf
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Dockerfile  text eol=lf

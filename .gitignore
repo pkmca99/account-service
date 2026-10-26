@@ -1,0 +1,14 @@
+# Build output
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Tools and local files that must not go to GitHub
+eksctl.exe
+*.exe
+.kubeconfig
+k8s-deploy.yml
+logs/

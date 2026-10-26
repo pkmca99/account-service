@@ -1,0 +1,136 @@
+# Kubernetes manifests for account-service (image in Amazon ECR).
+#
+#   kubectl apply -f k8s.yaml
+#   kubectl -n accounts get pods,svc
+#   kubectl -n accounts port-forward svc/account-service 8082:80     -> http://localhost:8082/api/v1/accounts
+#   kubectl delete -f k8s.yaml
+#
+# NOTE: account-service keeps its data IN MEMORY, so every pod has its own copy.
+# Keep replicas: 1 until the service uses a real database; with 2+ pods, a request may
+# land on a pod that does not have an account created through another pod.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: accounts
+  labels:
+    app.kubernetes.io/part-of: eazybank
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: account-service-config
+  namespace: accounts
+data:
+  ACCOUNTS_SEED_ENABLED: "true"            # load the 5 test accounts at startup
+  SPRING_MAIN_BANNER_MODE: "off"
+  LOGGING_STRUCTURED_FORMAT_CONSOLE: "ecs"   # one JSON object per log line (requestId included) for CloudWatch/ELK
+  APP_LOG_LEVEL: "INFO"                      # set to DEBUG to troubleshoot, then restart the pod
+  JAVA_TOOL_OPTIONS: "-XX:+ExitOnOutOfMemoryError"   # heap size comes from -XX:MaxRAMPercentage=75 in the Dockerfile
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: account-service
+  namespace: accounts
+automountServiceAccountToken: false        # the app does not call the Kubernetes API
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service
+  namespace: accounts
+  labels:
+    app: account-service
+spec:
+  replicas: 1                              # in-memory data: see note at the top
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: account-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0                    # start the new pod before stopping the old one
+  template:
+    metadata:
+      labels:
+        app: account-service
+        version: "1.0.0"
+    spec:
+      serviceAccountName: account-service
+      terminationGracePeriodSeconds: 30    # lets Spring finish in-flight requests (graceful shutdown)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: account-service
+          image: 546850508021.dkr.ecr.us-east-1.amazonaws.com/account-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: account-service-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              memory: 512Mi
+          # Slow first start (JVM warm-up) is covered by the startup probe,
+          # so liveness can stay strict once the app is up.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24             # up to 2 minutes to start
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp                      # Tomcat needs a writable /tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-service
+  namespace: accounts
+  labels:
+    app: account-service
+spec:
+  type: ClusterIP                          # internal only; use port-forward, an Ingress or the API gateway
+  selector:
+    app: account-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

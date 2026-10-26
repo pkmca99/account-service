@@ -1,0 +1,101 @@
+server:
+  port: 8080
+  shutdown: graceful
+  error:
+    include-stacktrace: never
+
+spring:
+  application:
+    name: account-service
+  threads:
+    virtual:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+# Test data loaded into memory at startup (no database).
+# Turn off with ACCOUNTS_SEED_ENABLED=false.
+accounts:
+  seed:
+    enabled: ${ACCOUNTS_SEED_ENABLED:true}
+    data:
+      - accountNumber: "1000000001"
+        customerId: CUST-1001
+        customerName: Amit Sharma
+        email: amit.sharma@example.com
+        mobileNumber: "9876543210"
+        accountType: SAVINGS
+        branchAddress: 123 Main Street, New York
+        currency: USD
+        balance: 15250.75
+      - accountNumber: "1000000002"
+        customerId: CUST-1001
+        customerName: Amit Sharma
+        email: amit.sharma@example.com
+        mobileNumber: "9876543210"
+        accountType: CURRENT
+        branchAddress: 123 Main Street, New York
+        currency: USD
+        balance: 2400.00
+      - accountNumber: "1000000003"
+        customerId: CUST-1002
+        customerName: Priya Patel
+        email: priya.patel@example.com
+        mobileNumber: "9123456780"
+        accountType: SAVINGS
+        branchAddress: 45 Lake Shore Drive, Chicago
+        currency: USD
+        balance: 98000.00
+      - accountNumber: "1000000004"
+        customerId: CUST-1003
+        customerName: John Miller
+        email: john.miller@example.com
+        mobileNumber: "9988776655"
+        accountType: SAVINGS
+        branchAddress: 10 Oxford Street, London
+        currency: GBP
+        balance: 520.10
+      - accountNumber: "1000000005"
+        customerId: CUST-1004
+        customerName: Sara Lee
+        email: sara.lee@example.com
+        mobileNumber: "9012345678"
+        accountType: CURRENT
+        branchAddress: 77 Boylston Street, Boston
+        currency: USD
+        balance: 0.00
+
+# ----- Application logging -----
+# Every line carries the request id (MDC "requestId", set by RequestLoggingFilter), e.g.
+#   2026-10-25T18:30:01.123-04:00  INFO 1 --- [account-service] [req=3f2c9a1e-...] [virtual-12] c.e.a.service.AccountService : Deposited 100.00 USD to account 1000000001 (version 1)
+#
+# Change the app log level without rebuilding: APP_LOG_LEVEL=DEBUG
+# JSON logs (for CloudWatch / ELK):  LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs
+# Also write a rotating log file:    LOG_FILE=logs/account-service.log
+logging:
+  level:
+    root: TRACE
+    com.example.accountservice: ${APP_LOG_LEVEL:TRACE}
+    org.springframework.web: TRACE
+  pattern:
+    correlation: "[req=%X{requestId:-none}] "
+  include-application-name: true
+  file:
+    name: ${LOG_FILE:}
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 7
+      total-size-cap: 200MB

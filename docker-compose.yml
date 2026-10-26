@@ -1,0 +1,24 @@
+# Runs account-service with its in-memory test data.
+#   docker compose up -d --build
+#   docker compose logs -f account-service
+#   docker compose down
+services:
+  account-service:
+    build: .
+    image: account-service:local
+    container_name: account-service
+    ports:
+      - "8080:8080"
+    environment:
+      ACCOUNTS_SEED_ENABLED: "true"       # load the test accounts from application.yml
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
