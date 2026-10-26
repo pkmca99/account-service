@@ -55,6 +55,31 @@ class AccountControllerHttpTest {
     }
 
     @Test
+    void listFiltersByCustomerAndStatus() throws Exception {
+        HttpResponse<String> created = post("/api/v1/accounts", newAccountJson("10.00"));
+        assertEquals(201, created.statusCode(), created.body());
+        String customerId = field(created.body(), "customerId");
+        String accountNumber = field(created.body(), "accountNumber");
+
+        HttpResponse<String> active = get("/api/v1/accounts?customerId=" + customerId + "&status=ACTIVE");
+        assertEquals(200, active.statusCode());
+        assertTrue(active.body().startsWith("["), active.body());
+        assertEquals(accountNumber, field(active.body(), "accountNumber"));
+
+        HttpResponse<String> frozen = get("/api/v1/accounts?customerId=" + customerId + "&status=FROZEN");
+        assertEquals(200, frozen.statusCode());
+        assertEquals("[]", frozen.body());
+    }
+
+    @Test
+    void listRejectsAMalformedCustomerId() throws Exception {
+        HttpResponse<String> res = get("/api/v1/accounts?customerId=C1");
+
+        assertEquals(400, res.statusCode());
+        assertEquals("BAD_REQUEST", field(res.body(), "code"));
+    }
+
+    @Test
     void unknownAccountIs404() throws Exception {
         HttpResponse<String> res = get("/api/v1/accounts/9999999999");
 
