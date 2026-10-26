@@ -95,7 +95,7 @@ public class AccountService {
             requireActive(a);
             return a.withBalance(a.balance().add(r.amount()), Instant.now(clock));
         });
-        log.info("Deposited {} {} to account {} (version {})",
+        log.info("Pradeep Deposited {} {} to account {} (version {})",
                 r.amount(), updated.currency(), accountNumber, updated.version());
         return updated;
     }
