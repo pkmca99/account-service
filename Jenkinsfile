@@ -1,6 +1,6 @@
 // CI/CD pipeline for account-service, run by Jenkins inside the EKS cluster
 //
-//   Checkout -> Build & unit tests -> Image -> ECR -> Deploy to EKS -> Smoke test
+//   Checkout -> Build & unit tests -> SonarQube analysis -> Image -> ECR -> Deploy to EKS -> Smoke test
 //
 // If the deploy or the smoke test fails, the deployment is rolled back to the previous version.
 // Each build runs in its own pod (jenkins/agent-pod.yaml). No AWS keys are stored in Jenkins:
@@ -77,6 +77,21 @@ pipeline {
                 }
                 success {
                     archiveArtifacts artifacts: 'target/account-service-*.jar', fingerprint: true
+                }
+            }
+        }
+
+        stage('SonarQube analysis') {
+            steps {
+                // Sends code, test results and JaCoCo coverage to SonarQube Cloud, then waits for the
+                // quality gate: a failed gate fails this stage, so nothing is built into an image or deployed.
+                // (Waiting in the scanner avoids needing a SonarQube webhook into this private Jenkins.)
+                withCredentials([string(credentialsId: 'sonarcloud-token', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        mvn -B -ntp org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+                          -Dsonar.qualitygate.wait=true \
+                          -Dsonar.qualitygate.timeout=300
+                    '''
                 }
             }
         }
