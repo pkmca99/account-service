@@ -8,6 +8,8 @@ import com.example.accountservice.model.AccountStatus;
 import com.example.accountservice.service.AccountService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,11 +33,13 @@ public class AccountController {
         this.service = service;
     }
 
+    private static final Logger log = LoggerFactory.getLogger(AccountController.class);
     /** GET /api/v1/accounts?customerId=CUST-1001&status=ACTIVE */
     @GetMapping
     public List<Account> list(
             @RequestParam(required = false) @Pattern(regexp = "^CUST-\\d{4,10}$") String customerId,
             @RequestParam(required = false) AccountStatus status) {
+        log.info("Pradeep listed accounts (customerId={}, status={})", customerId, status);
         return service.list(customerId, status);
     }
 

@@ -34,7 +34,7 @@ accounts:
       - accountNumber: "1000000001"
         customerId: CUST-1001
         customerName: Amit Sharma
-        email: amit.sharma@example.com
+        email: pradeep.sharma@example.com
         mobileNumber: "9876543210"
         accountType: SAVINGS
         branchAddress: 123 Main Street, New York
