@@ -45,6 +45,8 @@ public class AccountController {
 
     @GetMapping("/{accountNumber}")
     public ResponseEntity<Account> get(@PathVariable @Pattern(regexp = ACC_NO) String accountNumber) {
+        log.info("Pradeep 2 listed accounts "+ accountNumber);
+
         return withETag(service.get(accountNumber));
     }
 
