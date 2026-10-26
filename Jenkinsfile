@@ -3,8 +3,9 @@
 //   Checkout -> Build & unit tests -> SonarQube analysis -> Image -> ECR -> Deploy to EKS -> Smoke test
 //
 // If the deploy or the smoke test fails, the deployment is rolled back to the previous version.
+// Every build ends with an email (success or failure) through the SNS topic account-service-ci.
 // Each build runs in its own pod (jenkins/agent-pod.yaml). No AWS keys are stored in Jenkins:
-// ECR access comes from EKS Pod Identity, deploy rights from a Role in namespace "accounts".
+// ECR and SNS access come from EKS Pod Identity, deploy rights from a Role in namespace "accounts".
 // Setup: see jenkins/README.md
 
 // Roll the deployment back to the previous ReplicaSet. Called when deploy or smoke test fails.
@@ -15,6 +16,53 @@ def rollback() {
             kubectl -n "$K8S_NAMESPACE" rollout undo deployment/account-service || true
             kubectl -n "$K8S_NAMESPACE" rollout status deployment/account-service --timeout=300s || true
         '''
+    }
+}
+
+// Remember which stage is running, so a failure email can say where the build stopped.
+def stageStarted() {
+    env.LAST_STAGE = env.STAGE_NAME
+}
+
+// Email the build result: publish to the SNS topic, and AWS mails every confirmed subscriber
+// (pkmca99@gmail.com). The tools container publishes with the pod's Pod Identity role.
+// A failed email is only logged; it never changes the build result.
+def sendBuildEmail(String result) {
+    try {
+        def deployed = params.DEPLOY != false
+        def summary
+        if (result == 'SUCCESS') {
+            summary = deployed ? "deployed ${env.IMAGE_TAG}" : 'tests passed, not deployed (DEPLOY unticked)'
+        } else {
+            summary = "stopped at ${env.LAST_STAGE ?: 'start-up'}, nothing new deployed"
+        }
+        def commit = env.GIT_COMMIT ? env.GIT_COMMIT.substring(0, 7) : 'n/a'
+        def text = "account-service build #${env.BUILD_NUMBER}: ${result}\n" +
+                "${summary}\n\n" +
+                "Commit:    ${commit} ${env.COMMIT_SUBJECT ?: ''}\n" +
+                "Image:     ${env.IMAGE_TAG ? env.IMAGE + ':' + env.IMAGE_TAG : 'n/a'}\n" +
+                "Duration:  ${currentBuild.durationString.replace(' and counting', '')}\n" +
+                "Build log: ${env.BUILD_URL}console\n" +
+                "           (open after: kubectl -n jenkins port-forward svc/jenkins 8091:8080)\n" +
+                "SonarQube: https://sonarcloud.io/project/overview?id=pkmca99_account-service\n"
+        if (result != 'SUCCESS' && (env.LAST_STAGE == 'Deploy to EKS' || env.LAST_STAGE == 'Smoke test')) {
+            text += "\nThe deployment was rolled back to the previous version automatically.\n"
+        }
+        def subject = "account-service #${env.BUILD_NUMBER} ${result}: ${summary}"
+        if (subject.length() > 99) {
+            subject = subject.substring(0, 99)        // SNS limit: 100 characters
+        }
+        writeFile file: 'build-email.txt', text: text
+        withEnv(["EMAIL_SUBJECT=${subject}"]) {
+            container('tools') {
+                sh '''
+                    aws sns publish --region "$AWS_REGION" --topic-arn "$ALERT_TOPIC" \
+                      --subject "$EMAIL_SUBJECT" --message file://build-email.txt --query MessageId --output text
+                '''
+            }
+        }
+    } catch (err) {
+        echo "Build email not sent: ${err}"
     }
 }
 
@@ -49,16 +97,19 @@ pipeline {
         ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         IMAGE          = "${ECR_REGISTRY}/account-service"
         K8S_NAMESPACE  = 'accounts'
+        ALERT_TOPIC    = "arn:aws:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:account-service-ci"   // build emails
     }
 
     stages {
         stage('Checkout') {
             steps {
+                script { stageStarted() }
                 // git lives in the agent's own jnlp container, not in the maven image
                 container('jnlp') {
                     checkout scm
                     script {
                         def shortCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                        env.COMMIT_SUBJECT = sh(returnStdout: true, script: 'git log -1 --format=%s').trim()
                         env.IMAGE_TAG = "${env.BUILD_NUMBER}-${shortCommit}"
                         currentBuild.description = "image ${env.IMAGE_TAG}"
                     }
@@ -69,6 +120,7 @@ pipeline {
 
         stage('Build & unit tests') {
             steps {
+                script { stageStarted() }
                 sh 'mvn -B -ntp clean verify'
             }
             post {
@@ -83,6 +135,7 @@ pipeline {
 
         stage('SonarQube analysis') {
             steps {
+                script { stageStarted() }
                 // Sends code, test results and JaCoCo coverage to SonarQube Cloud, then waits for the
                 // quality gate: a failed gate fails this stage, so nothing is built into an image or deployed.
                 // (Waiting in the scanner avoids needing a SonarQube webhook into this private Jenkins.)
@@ -99,6 +152,7 @@ pipeline {
         stage('Image -> ECR') {
             when { expression { params.DEPLOY != false } }   // null on the very first run = deploy
             steps {
+                script { stageStarted() }
                 // ECR login token (Pod Identity credentials), written as a Docker config for BuildKit
                 container('tools') {
                     sh '''
@@ -130,6 +184,7 @@ pipeline {
         stage('Deploy to EKS') {
             when { expression { params.DEPLOY != false } }
             steps {
+                script { stageStarted() }
                 // kubectl uses the pod's service-account token (Role jenkins-deployer in namespace accounts)
                 container('tools') {
                     sh '''
@@ -152,6 +207,7 @@ pipeline {
         stage('Smoke test') {
             when { expression { params.DEPLOY != false } }
             steps {
+                script { stageStarted() }
                 // A throwaway curl pod inside the cluster calls the service through its Kubernetes Service.
                 container('tools') {
                     sh '''
@@ -177,6 +233,16 @@ pipeline {
     post {
         success {
             echo "Deployed ${IMAGE}:${IMAGE_TAG}"
+            script { sendBuildEmail('SUCCESS') }
+        }
+        failure {
+            script { sendBuildEmail('FAILURE') }
+        }
+        unstable {
+            script { sendBuildEmail('UNSTABLE') }
+        }
+        aborted {
+            script { sendBuildEmail('ABORTED') }
         }
     }
 }

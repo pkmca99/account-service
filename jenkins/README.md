@@ -62,6 +62,23 @@ Watch the agent pod start and finish:
 kubectl -n jenkins get pods -w
 ```
 
+### Build emails
+
+Every build ends with an email to pkmca99@gmail.com: on success (deployed image), and on failure,
+unstable or aborted builds (with the stage where it stopped, and whether the deploy was rolled back).
+
+The build pod publishes to the SNS topic `account-service-ci` with its Pod Identity role (policy
+`jenkins-agent-ecr`, statement `BuildEmailAlerts`); AWS sends the mail from `no-reply@sns.amazonaws.com`.
+No mail password is stored anywhere. A failed email is logged in the build and never fails the build.
+
+Add or remove a recipient (the new address must click the confirmation link AWS sends it):
+
+```
+aws sns subscribe --topic-arn arn:aws:sns:us-east-1:546850508021:account-service-ci --protocol email --notification-endpoint someone@example.com --region us-east-1
+aws sns list-subscriptions-by-topic --topic-arn arn:aws:sns:us-east-1:546850508021:account-service-ci --region us-east-1
+aws sns unsubscribe --subscription-arn <arn from the list> --region us-east-1
+```
+
 ### Check the deployment
 
 ```

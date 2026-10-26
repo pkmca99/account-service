@@ -24,6 +24,12 @@
         "arn:aws:ecr:us-east-1:546850508021:repository/account-service",
         "arn:aws:ecr:us-east-1:546850508021:repository/ci-tools"
       ]
+    },
+    {
+      "Sid": "BuildEmailAlerts",
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:us-east-1:546850508021:account-service-ci"
     }
   ]
 }
