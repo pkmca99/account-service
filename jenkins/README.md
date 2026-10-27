@@ -100,6 +100,18 @@ Jenkins waits as `Pending` and its EBS volume is kept:
 The EBS CSI driver and the Pod Identity agent also run only on `ci-nodes`, so while it is at zero,
 nothing can create EBS volumes or use Pod Identity. The app itself is not affected.
 
+### Remove everything from AWS, and build it again
+
+Two scripts in `../scripts` (run them in Git Bash from the project folder, with `aws login` done):
+
+| Script | What it does | Time |
+|---|---|---|
+| `./scripts/aws-down.sh` | Deletes the EKS cluster (Jenkins and the app with it), the retained Jenkins EBS volumes, the IAM policy/role `jenkins-agent-ecr`, the ECR repositories `account-service` and `ci-tools`, and the SNS topic `account-service-ci`. Asks you to type the cluster name first. **Cannot be undone**: images and build history are lost. | ~15 min |
+| `./scripts/aws-up.sh` | Builds all of it again from `cluster.yml` and `jenkins/`: the steps of "Set up from scratch" below, in one go. Asks for the SonarQube Cloud token (hidden input). Needs Docker running, for the `ci-tools` image. | ~30 min |
+
+Both are safe to re-run, and skip whatever is already gone or already there. Shared names are in `scripts/aws-env.sh`.
+After `aws-up.sh`, confirm the SNS subscription email and start the first build by hand; it deploys the app.
+
 ---
 
 ## Change the setup

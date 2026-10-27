@@ -3,6 +3,7 @@ kind: ClusterConfig
 metadata:
   name: accountsevice-cluster
   region: us-east-1
+  version: "1.34"             # ci-tools kubectl (jenkins/ci-tools/Dockerfile) must stay within one minor version
   tags: { owner: pradeep, purpose: practice }
 vpc:
   nat:
